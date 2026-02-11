@@ -1,0 +1,5 @@
+{
+  "name": "CloudChat",
+  "description": "A modern, secure, and aesthetic chat application designed for Google Cloud deployment, featuring admin management, encrypted messaging, and friend interactions.",
+  "requestFramePermissions": []
+}
