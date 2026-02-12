@@ -1,6 +1,6 @@
 # CloudChat
 
-A modern, aesthetically pleasing chat application built with React, TypeScript, and Tailwind CSS. Designed to be deployed on Google Cloud.
+A modern, aesthetically pleasing chat application built with React, TypeScript, and Tailwind CSS. Designed to be deployed on **Google Cloud**.
 
 ## Features
 
