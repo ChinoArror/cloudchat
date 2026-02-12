@@ -15,22 +15,23 @@ const AdminPanel: React.FC = () => {
     loadUsers();
   }, []);
 
-  const loadUsers = () => {
-    setUsers(getUsers());
+  const loadUsers = async () => {
+    const u = await getUsers();
+    setUsers(u);
   };
 
-  const handleDelete = (id: string) => {
+  const handleDelete = async (id: string) => {
     if (id === ADMIN_USER_ID) {
       alert("Cannot delete root admin.");
       return;
     }
     if (confirm('Are you sure you want to delete this user? This action cannot be undone.')) {
-      deleteUser(id);
+      await deleteUser(id);
       loadUsers();
     }
   };
 
-  const handleToggleStatus = (user: User) => {
+  const handleToggleStatus = async (user: User) => {
     if (user.id === ADMIN_USER_ID) {
       alert("Cannot pause root admin.");
       return;
@@ -42,7 +43,7 @@ const AdminPanel: React.FC = () => {
       
     if (confirm(confirmMsg)) {
       const updatedUser = { ...user, status: newStatus };
-      saveUser(updatedUser);
+      await saveUser(updatedUser);
       loadUsers();
     }
   };
@@ -79,7 +80,7 @@ const AdminPanel: React.FC = () => {
     }
   };
 
-  const handleSave = (e: React.FormEvent) => {
+  const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingUser.username || !editingUser.password) {
       alert("Username and Password are required");
@@ -89,7 +90,6 @@ const AdminPanel: React.FC = () => {
     // Root Admin Protection Checks
     if (editingUser.id === ADMIN_USER_ID) {
       // Logic inside storage.ts also prevents this, but UI should also be robust
-      // We allow password changes, but ensure username/role stay same
     }
 
     const newUser: User = {
@@ -102,7 +102,7 @@ const AdminPanel: React.FC = () => {
       avatar: tempAvatar
     };
 
-    saveUser(newUser);
+    await saveUser(newUser);
     setIsModalOpen(false);
     loadUsers();
   };

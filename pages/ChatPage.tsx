@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Session, User, Message } from '../types';
-import { getFriends, getMessages, sendMessage, getUsers } from '../services/storage';
+import { getFriends, subscribeToMessages, sendMessage } from '../services/storage';
 import { EMOJI_LIST } from '../constants';
 
 interface ChatPageProps {
@@ -16,42 +16,51 @@ const ChatPage: React.FC<ChatPageProps> = ({ session, initialChatId }) => {
   const [showEmoji, setShowEmoji] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
+  // Load Friends (Async)
   useEffect(() => {
-    setFriends(getFriends(session.userId));
+    const loadFriends = async () => {
+      const f = await getFriends(session.userId);
+      setFriends(f);
+    };
+    loadFriends();
   }, [session.userId]);
 
+  // Update selection if prop changes
   useEffect(() => {
     if (initialChatId) setSelectedFriendId(initialChatId);
   }, [initialChatId]);
 
+  // Subscribe to real-time messages
   useEffect(() => {
     if (!selectedFriendId) return;
-    const load = () => {
-      setMessages(getMessages(session.userId, selectedFriendId));
-    };
-    load();
-    const interval = setInterval(load, 1500); // Poll for new messages
-    return () => clearInterval(interval);
+
+    // Use the real-time listener instead of polling
+    const unsubscribe = subscribeToMessages(session.userId, selectedFriendId, (msgs) => {
+      setMessages(msgs);
+    });
+
+    return () => unsubscribe();
   }, [selectedFriendId, session.userId]);
 
+  // Scroll to bottom on new messages
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  const handleSend = (e?: React.FormEvent) => {
+  const handleSend = async (e?: React.FormEvent) => {
     e?.preventDefault();
     if (!input.trim() || !selectedFriendId) return;
-    sendMessage(session.userId, selectedFriendId, input);
-    setInput('');
+    
+    const contentToSend = input;
+    setInput(''); // Optimistic clear
     setShowEmoji(false);
-    setMessages(prev => [...prev, {
-      id: 'temp', 
-      senderId: session.userId, 
-      receiverId: selectedFriendId, 
-      content: input, 
-      timestamp: Date.now(), 
-      type: 'text'
-    }]);
+
+    try {
+      await sendMessage(session.userId, selectedFriendId, contentToSend);
+    } catch (e) {
+      console.error("Failed to send message", e);
+      setInput(contentToSend); // Revert on failure
+    }
   };
 
   const insertEmoji = (emoji: string) => {
@@ -80,6 +89,7 @@ const ChatPage: React.FC<ChatPageProps> = ({ session, initialChatId }) => {
             >
               <div className="relative">
                 <img src={friend.avatar} className="w-12 h-12 rounded-full object-cover border-2 border-white/50 dark:border-white/10 shadow-sm" alt="" />
+                {/* Status indicator can be enhanced later with real-time user presence */}
                 <div className="absolute bottom-0 right-0 w-3 h-3 bg-green-500 border-2 border-white rounded-full"></div>
               </div>
               <div className="text-left min-w-0 flex-1">

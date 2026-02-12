@@ -28,8 +28,8 @@ const Layout: React.FC<LayoutProps> = ({ children, session, currentPage, onNavig
 
   // Session Validation Loop
   useEffect(() => {
-    const checkStatus = () => {
-      const freshUser = getUserById(session.userId);
+    const checkStatus = async () => {
+      const freshUser = await getUserById(session.userId);
       if (!freshUser || freshUser.status === UserStatus.PAUSED) {
         alert("Your session has expired or your account was suspended.");
         logout();
@@ -48,7 +48,7 @@ const Layout: React.FC<LayoutProps> = ({ children, session, currentPage, onNavig
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
-      if (file.size > 500000) { // Limit to 500KB for localStorage sake
+      if (file.size > 500000) { // Limit to 500KB for Base64 in Firestore sake (Firestore limit is 1MB doc size)
         alert("File too large. Please select an image under 500KB.");
         return;
       }
@@ -60,13 +60,13 @@ const Layout: React.FC<LayoutProps> = ({ children, session, currentPage, onNavig
     }
   };
 
-  const saveProfile = (e: React.FormEvent) => {
+  const saveProfile = async (e: React.FormEvent) => {
     e.preventDefault();
     if (currentUserData) {
       const updatedUser = { ...currentUserData, avatar: newAvatar };
-      saveUser(updatedUser);
+      await saveUser(updatedUser);
       setShowProfileModal(false);
-      // Force refresh of layout data by reloading or state update (handled by interval mostly)
+      // Force refresh of layout data
       setCurrentUserData(updatedUser);
     }
   };

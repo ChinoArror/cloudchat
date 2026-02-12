@@ -36,29 +36,36 @@ export const clearSessionCookie = () => {
   document.cookie = `${COOKIE_NAME}=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;`;
 };
 
-export const login = (username: string, password: string): { success: boolean, session?: Session, message?: string } => {
-  const user = findUserByUsername(username);
-  if (!user) {
-    return { success: false, message: 'Invalid credentials' };
-  }
-  
-  if (user.status === UserStatus.PAUSED) {
-    return { success: false, message: 'This account has been suspended by an administrator.' };
-  }
+// Now returns a Promise
+export const login = async (username: string, password: string): Promise<{ success: boolean, session?: Session, message?: string }> => {
+  try {
+    const user = await findUserByUsername(username);
+    
+    if (!user) {
+      return { success: false, message: 'Invalid credentials' };
+    }
+    
+    if (user.status === UserStatus.PAUSED) {
+      return { success: false, message: 'This account has been suspended by an administrator.' };
+    }
 
-  if (user.password !== password) {
-    return { success: false, message: 'Invalid credentials' };
-  }
+    if (user.password !== password) {
+      return { success: false, message: 'Invalid credentials' };
+    }
 
-  const session: Session = {
-    userId: user.id,
-    username: user.username,
-    role: user.role,
-    expiry: Date.now() + (COOKIE_EXPIRY_DAYS * 24 * 60 * 60 * 1000)
-  };
-  
-  setSessionCookie(session);
-  return { success: true, session };
+    const session: Session = {
+      userId: user.id,
+      username: user.username,
+      role: user.role,
+      expiry: Date.now() + (COOKIE_EXPIRY_DAYS * 24 * 60 * 60 * 1000)
+    };
+    
+    setSessionCookie(session);
+    return { success: true, session };
+  } catch (error) {
+    console.error("Login error:", error);
+    return { success: false, message: 'Network error during login.' };
+  }
 };
 
 export const logout = () => {

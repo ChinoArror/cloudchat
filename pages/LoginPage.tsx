@@ -14,21 +14,24 @@ const LoginPage: React.FC<LoginPageProps> = ({ onLogin }) => {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
     setError('');
 
-    // Simulate network delay
-    setTimeout(() => {
-      const result = login(username, password);
+    try {
+      // Login is now async/await
+      const result = await login(username, password);
       if (result.success && result.session) {
         onLogin(result.session);
       } else {
         setError(result.message || 'Login failed');
+        setLoading(false);
       }
+    } catch (err) {
+      setError('An unexpected error occurred.');
       setLoading(false);
-    }, 600);
+    }
   };
 
   return (

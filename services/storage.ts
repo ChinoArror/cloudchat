@@ -1,10 +1,87 @@
 import { User, Message, FriendRequest, UserRole, FriendRequestStatus, UserStatus } from '../types';
-import { ADMIN_CREDENTIALS, ADMIN_USER_ID, ENCRYPTION_SECRET } from '../constants';
+import { ADMIN_CREDENTIALS, ADMIN_USER_ID, ENCRYPTION_SECRET, FIREBASE_CONFIG, CONFIG_STORAGE_KEY } from '../constants';
+import * as firebaseApp from 'firebase/app';
+import { 
+  getFirestore, 
+  collection, 
+  doc, 
+  setDoc, 
+  getDoc, 
+  getDocs, 
+  addDoc, 
+  updateDoc, 
+  deleteDoc, 
+  query, 
+  where, 
+  orderBy, 
+  onSnapshot,
+  or,
+  and,
+  initializeFirestore
+} from 'firebase/firestore';
 
-// --- Encryption Logic (AES Simulation via XOR+Base64) ---
-// This ensures that message content stored in LocalStorage is not readable as plain text.
-// In a production GCP environment, this would be replaced by server-side encryption 
-// and HTTPS (TLS) for data in transit.
+// --- Firebase Initialization ---
+
+// Check if config is valid (not the placeholder)
+export const isFirebaseConfigured = () => {
+  return FIREBASE_CONFIG.apiKey !== "YOUR_API_KEY_HERE";
+};
+
+let app: any = null;
+let dbInstance: any = null;
+
+if (isFirebaseConfigured()) {
+  try {
+    app = firebaseApp.initializeApp(FIREBASE_CONFIG);
+    // Initialize Firestore with settings to avoid "Backend didn't respond" errors
+    // Connect explicitly to the 'chat' database as requested
+    dbInstance = initializeFirestore(app, {
+      experimentalForceLongPolling: true,
+    }, 'chat');
+  } catch (error) {
+    console.error("Failed to initialize Firebase:", error);
+  }
+}
+
+export const db = dbInstance;
+
+// Helper to save config from UI
+export const saveFirebaseConfig = (config: any) => {
+  localStorage.setItem(CONFIG_STORAGE_KEY, JSON.stringify(config));
+  window.location.reload();
+};
+
+export const resetFirebaseConfig = () => {
+  localStorage.removeItem(CONFIG_STORAGE_KEY);
+  window.location.reload();
+};
+
+// Check DB Connection explicitly to detect "Missing Database" error
+export const checkDatabaseConnection = async (): Promise<{ok: boolean, error?: string}> => {
+  if (!db) return { ok: false, error: "Firebase not initialized" };
+  try {
+     // Try to read the admin user doc. 
+     // If DB exists, this returns a snapshot (exists=true/false).
+     // If DB does not exist, this throws an error.
+     await getDoc(doc(db, 'users', ADMIN_USER_ID));
+     return { ok: true };
+  } catch (e: any) {
+     const msg = e.message || '';
+     // Detect specific Firestore "Database not found" error
+     // This catches "The database (default) does not exist" OR "The database (chat) does not exist"
+     if (msg.includes('does not exist') || (msg.includes('project') && msg.includes('database') && e.code === 'not-found') || e.code === 'not-found') {
+         return { ok: false, error: 'database_missing' };
+     }
+     // Ignore offline errors for the check, assume it's just network
+     if (msg.includes('offline')) {
+         return { ok: true }; 
+     }
+     console.warn("DB Check failed:", e);
+     return { ok: false, error: msg };
+  }
+};
+
+// --- Encryption Logic (Client-side) ---
 const encrypt = (text: string): string => {
   const chars = text.split('');
   const secretLen = ENCRYPTION_SECRET.length;
@@ -26,168 +103,173 @@ const decrypt = (cipher: string): string => {
   }
 };
 
-// --- Storage Keys ---
-const KEYS = {
-  USERS: 'cc_users',
-  MESSAGES: 'cc_messages',
-  FRIEND_REQUESTS: 'cc_friend_requests',
-};
-
 // --- Helper: Initial Data Seeding ---
-const initializeStorage = () => {
-  let users: User[] = [];
+// Exported so App.tsx can call it only after verifying DB connection
+export const initializeStorage = async () => {
+  if (!db) return; // Skip if not configured
+
   try {
-    const stored = localStorage.getItem(KEYS.USERS);
-    if (stored) {
-      users = JSON.parse(stored);
+    const adminRef = doc(db, 'users', ADMIN_USER_ID);
+    const adminSnap = await getDoc(adminRef);
+
+    if (!adminSnap.exists()) {
+      // Create Admin if not exists
+      const rootAdminData: User = {
+        id: ADMIN_USER_ID,
+        username: ADMIN_CREDENTIALS.username,
+        password: ADMIN_CREDENTIALS.password,
+        role: UserRole.ADMIN,
+        status: UserStatus.ACTIVE,
+        createdAt: Date.now(),
+        avatar: 'https://picsum.photos/seed/admin/200/200'
+      };
+      await setDoc(adminRef, rootAdminData);
+      console.log("Root admin initialized in Firestore.");
+    } else {
+      // Enforce critical fields for Root Admin
+      await updateDoc(adminRef, {
+        username: ADMIN_CREDENTIALS.username,
+        role: UserRole.ADMIN,
+        status: UserStatus.ACTIVE
+      });
     }
   } catch (e) {
-    console.error("Failed to parse users", e);
-    users = [];
+    // We log it but don't crash here; App.tsx checks connection explicitly
+    console.error("Error initializing Firestore data:", e);
   }
+};
 
-  // Ensure Root Admin exists, is ACTIVE, and is protected
-  const adminIndex = users.findIndex(u => u.id === ADMIN_USER_ID);
+// --- User Services (Async) ---
+
+export const getUsers = async (): Promise<User[]> => {
+  if (!db) throw new Error("Database not initialized");
+  const querySnapshot = await getDocs(collection(db, 'users'));
+  return querySnapshot.docs.map(doc => doc.data() as User);
+};
+
+export const saveUser = async (user: User): Promise<void> => {
+  if (!db) throw new Error("Database not initialized");
+  await setDoc(doc(db, 'users', user.id), user);
+};
+
+export const deleteUser = async (userId: string): Promise<void> => {
+  if (!db) throw new Error("Database not initialized");
+  await deleteDoc(doc(db, 'users', userId));
+};
+
+export const findUserByUsername = async (username: string): Promise<User | undefined> => {
+  if (!db) throw new Error("Database not initialized");
+  const q = query(collection(db, 'users'), where("username", "==", username));
+  const querySnapshot = await getDocs(q);
+  if (querySnapshot.empty) return undefined;
+  return querySnapshot.docs[0].data() as User;
+};
+
+export const getUserById = async (id: string): Promise<User | undefined> => {
+  if (!db) return undefined; // Fail silently for session checks if DB unavailable
+  const docRef = doc(db, 'users', id);
+  try {
+    const docSnap = await getDoc(docRef);
+    if (docSnap.exists()) {
+      return docSnap.data() as User;
+    }
+  } catch (e) {
+    console.warn("Could not fetch user", id, e);
+  }
+  return undefined;
+};
+
+// --- Message Services (Real-time) ---
+
+export const subscribeToMessages = (user1Id: string, user2Id: string, callback: (messages: Message[]) => void) => {
+  if (!db) return () => {};
   
-  const rootAdminData: User = {
-    id: ADMIN_USER_ID,
-    username: ADMIN_CREDENTIALS.username,
-    password: ADMIN_CREDENTIALS.password,
-    role: UserRole.ADMIN,
-    status: UserStatus.ACTIVE, // Root admin cannot be paused by default logic here
-    createdAt: Date.now(),
-    avatar: 'https://picsum.photos/seed/admin/200/200'
-  };
-
-  if (adminIndex >= 0) {
-    // Preserve existing avatar if changed, but enforce ID/Role/Username integrity for root
-    users[adminIndex] = { 
-      ...users[adminIndex],
-      username: ADMIN_CREDENTIALS.username, // Enforce root username
-      role: UserRole.ADMIN, // Enforce root role
-      status: UserStatus.ACTIVE // Enforce active status
-    };
-    // We allow password changes via the UI, so we don't overwrite password here unless we want to reset it.
-    // For this demo, let's strictly enforce the constant password on reload to avoid lockout if localStorage persists.
-    // In a real app, you wouldn't reset password on every app load.
-    users[adminIndex].password = ADMIN_CREDENTIALS.password; 
-  } else {
-    // Create new root admin
-    users.push(rootAdminData);
-  }
-
-  // Migration: Ensure all users have a status
-  users = users.map(u => ({
-    ...u,
-    status: u.status || UserStatus.ACTIVE
-  }));
-
-  localStorage.setItem(KEYS.USERS, JSON.stringify(users));
-
-  if (!localStorage.getItem(KEYS.MESSAGES)) localStorage.setItem(KEYS.MESSAGES, JSON.stringify([]));
-  if (!localStorage.getItem(KEYS.FRIEND_REQUESTS)) localStorage.setItem(KEYS.FRIEND_REQUESTS, JSON.stringify([]));
-};
-
-initializeStorage();
-
-// --- User Services ---
-export const getUsers = (): User[] => {
-  const users = localStorage.getItem(KEYS.USERS);
-  return users ? JSON.parse(users) : [];
-};
-
-export const saveUser = (user: User): void => {
-  const users = getUsers();
-  const existingIndex = users.findIndex(u => u.id === user.id);
-  if (existingIndex >= 0) {
-    users[existingIndex] = user;
-  } else {
-    users.push(user);
-  }
-  localStorage.setItem(KEYS.USERS, JSON.stringify(users));
-};
-
-export const deleteUser = (userId: string): void => {
-  const users = getUsers().filter(u => u.id !== userId);
-  localStorage.setItem(KEYS.USERS, JSON.stringify(users));
-};
-
-export const findUserByUsername = (username: string): User | undefined => {
-  return getUsers().find(u => u.username === username);
-};
-
-export const getUserById = (id: string): User | undefined => {
-  return getUsers().find(u => u.id === id);
-};
-
-export const updateUserStatus = (userId: string, status: UserStatus): void => {
-  const users = getUsers();
-  const user = users.find(u => u.id === userId);
-  if (user && userId !== ADMIN_USER_ID) { // Double check: prevent pausing root admin
-    user.status = status;
-    localStorage.setItem(KEYS.USERS, JSON.stringify(users));
-  }
-};
-
-// --- Message Services ---
-export const getMessages = (user1Id: string, user2Id: string): Message[] => {
-  const allMessages: Message[] = JSON.parse(localStorage.getItem(KEYS.MESSAGES) || '[]');
-  
-  // Filter messages between the two users
-  const conversation = allMessages.filter(m => 
-    (m.senderId === user1Id && m.receiverId === user2Id) ||
-    (m.senderId === user2Id && m.receiverId === user1Id)
+  const messagesRef = collection(db, 'messages');
+  const q = query(
+    messagesRef,
+    or(
+      and(where('senderId', '==', user1Id), where('receiverId', '==', user2Id)),
+      and(where('senderId', '==', user2Id), where('receiverId', '==', user1Id))
+    ),
+    orderBy('timestamp', 'asc')
   );
 
-  // Decrypt content for display
-  return conversation.map(m => ({
-    ...m,
-    content: decrypt(m.content)
-  })).sort((a, b) => a.timestamp - b.timestamp);
+  return onSnapshot(q, (snapshot) => {
+    const messages = snapshot.docs.map(doc => {
+      const data = doc.data() as Message;
+      return { ...data, content: decrypt(data.content) };
+    });
+    callback(messages);
+  }, (error) => {
+    console.error("Error subscribing to messages:", error);
+  });
 };
 
-export const sendMessage = (senderId: string, receiverId: string, content: string, type: 'text' | 'emoji' = 'text'): Message => {
-  const allMessages: Message[] = JSON.parse(localStorage.getItem(KEYS.MESSAGES) || '[]');
-  
+export const sendMessage = async (senderId: string, receiverId: string, content: string, type: 'text' | 'emoji' = 'text'): Promise<void> => {
+  if (!db) throw new Error("Database not initialized");
   const newMessage: Message = {
     id: crypto.randomUUID(),
     senderId,
     receiverId,
-    content: encrypt(content), // Encrypt before storing
+    content: encrypt(content),
     timestamp: Date.now(),
     type
   };
-
-  allMessages.push(newMessage);
-  localStorage.setItem(KEYS.MESSAGES, JSON.stringify(allMessages));
-  return { ...newMessage, content }; // Return unencrypted for UI update
+  await addDoc(collection(db, 'messages'), newMessage);
 };
 
-// --- Friend Services ---
-export const getFriendRequests = (userId: string): FriendRequest[] => {
-  const requests: FriendRequest[] = JSON.parse(localStorage.getItem(KEYS.FRIEND_REQUESTS) || '[]');
-  return requests.filter(r => r.toUserId === userId && r.status === FriendRequestStatus.PENDING);
+// --- Friend Services (Async & Real-time) ---
+
+export const subscribeToFriendRequests = (userId: string, callback: (requests: FriendRequest[]) => void) => {
+  if (!db) return () => {};
+  const q = query(
+    collection(db, 'friend_requests'), 
+    where('toUserId', '==', userId), 
+    where('status', '==', FriendRequestStatus.PENDING)
+  );
+  
+  return onSnapshot(q, (snapshot) => {
+    callback(snapshot.docs.map(doc => doc.data() as FriendRequest));
+  }, (error) => {
+    console.error("Error subscribing to friend requests:", error);
+  });
 };
 
-export const getSentRequests = (userId: string): FriendRequest[] => {
-  const requests: FriendRequest[] = JSON.parse(localStorage.getItem(KEYS.FRIEND_REQUESTS) || '[]');
-  return requests.filter(r => r.fromUserId === userId && r.status === FriendRequestStatus.PENDING);
+export const subscribeToSentRequests = (userId: string, callback: (requests: FriendRequest[]) => void) => {
+  if (!db) return () => {};
+  const q = query(
+    collection(db, 'friend_requests'), 
+    where('fromUserId', '==', userId), 
+    where('status', '==', FriendRequestStatus.PENDING)
+  );
+
+  return onSnapshot(q, (snapshot) => {
+    callback(snapshot.docs.map(doc => doc.data() as FriendRequest));
+  }, (error) => {
+     console.error("Error subscribing to sent requests:", error);
+  });
 };
 
-export const sendFriendRequest = (fromUserId: string, toUsername: string): { success: boolean, message: string } => {
-  const targetUser = findUserByUsername(toUsername);
+export const sendFriendRequest = async (fromUserId: string, toUsername: string): Promise<{ success: boolean, message: string }> => {
+  if (!db) return { success: false, message: "Database Error" };
+  
+  const targetUser = await findUserByUsername(toUsername);
   if (!targetUser) return { success: false, message: 'User not found.' };
   if (targetUser.id === fromUserId) return { success: false, message: 'Cannot add yourself.' };
   if (targetUser.status === UserStatus.PAUSED) return { success: false, message: 'User is currently unavailable.' };
 
-  const requests: FriendRequest[] = JSON.parse(localStorage.getItem(KEYS.FRIEND_REQUESTS) || '[]');
-  
-  // Check if already friends or requested
-  const existing = requests.find(r => 
-    ((r.fromUserId === fromUserId && r.toUserId === targetUser.id) || 
-     (r.fromUserId === targetUser.id && r.toUserId === fromUserId)) &&
-    (r.status === FriendRequestStatus.PENDING || r.status === FriendRequestStatus.ACCEPTED)
+  const q = query(
+    collection(db, 'friend_requests'),
+    or(
+      and(where('fromUserId', '==', fromUserId), where('toUserId', '==', targetUser.id)),
+      and(where('fromUserId', '==', targetUser.id), where('toUserId', '==', fromUserId))
+    )
   );
+  
+  const querySnapshot = await getDocs(q);
+  const existing = querySnapshot.docs
+    .map(d => d.data() as FriendRequest)
+    .find(r => r.status === FriendRequestStatus.PENDING || r.status === FriendRequestStatus.ACCEPTED);
 
   if (existing) {
     if (existing.status === FriendRequestStatus.ACCEPTED) return { success: false, message: 'Already friends.' };
@@ -202,28 +284,31 @@ export const sendFriendRequest = (fromUserId: string, toUsername: string): { suc
     timestamp: Date.now()
   };
 
-  requests.push(newRequest);
-  localStorage.setItem(KEYS.FRIEND_REQUESTS, JSON.stringify(requests));
+  await setDoc(doc(db, 'friend_requests', newRequest.id), newRequest);
   return { success: true, message: 'Friend request sent.' };
 };
 
-export const respondToRequest = (requestId: string, status: FriendRequestStatus): void => {
-  const requests: FriendRequest[] = JSON.parse(localStorage.getItem(KEYS.FRIEND_REQUESTS) || '[]');
-  const index = requests.findIndex(r => r.id === requestId);
-  if (index >= 0) {
-    requests[index].status = status;
-    localStorage.setItem(KEYS.FRIEND_REQUESTS, JSON.stringify(requests));
-  }
+export const respondToRequest = async (requestId: string, status: FriendRequestStatus): Promise<void> => {
+  if (!db) return;
+  const requestRef = doc(db, 'friend_requests', requestId);
+  await updateDoc(requestRef, { status });
 };
 
-export const getFriends = (userId: string): User[] => {
-  const requests: FriendRequest[] = JSON.parse(localStorage.getItem(KEYS.FRIEND_REQUESTS) || '[]');
-  const accepted = requests.filter(r => r.status === FriendRequestStatus.ACCEPTED && (r.fromUserId === userId || r.toUserId === userId));
+export const getFriends = async (userId: string): Promise<User[]> => {
+  if (!db) return [];
+  const q1 = query(collection(db, 'friend_requests'), where('status', '==', FriendRequestStatus.ACCEPTED), where('fromUserId', '==', userId));
+  const q2 = query(collection(db, 'friend_requests'), where('status', '==', FriendRequestStatus.ACCEPTED), where('toUserId', '==', userId));
+
+  const [snap1, snap2] = await Promise.all([getDocs(q1), getDocs(q2)]);
   
-  const friendIds = accepted.map(r => r.fromUserId === userId ? r.toUserId : r.fromUserId);
-  const allUsers = getUsers();
+  const friendIds = new Set<string>();
+  snap1.forEach(d => friendIds.add((d.data() as FriendRequest).toUserId));
+  snap2.forEach(d => friendIds.add((d.data() as FriendRequest).fromUserId));
+
+  if (friendIds.size === 0) return [];
+
+  const friendPromises = Array.from(friendIds).map(fid => getUserById(fid));
+  const friends = await Promise.all(friendPromises);
   
-  // Filter only active users (optional: you might want to see paused friends but disable chat)
-  // For now, we return all, but UI might indicate they are paused.
-  return allUsers.filter(u => friendIds.includes(u.id));
+  return friends.filter((f): f is User => f !== undefined);
 };

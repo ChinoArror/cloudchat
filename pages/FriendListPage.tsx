@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Session, User, FriendRequest } from '../types';
-import { getFriends, getFriendRequests, sendFriendRequest, respondToRequest, getSentRequests } from '../services/storage';
+import { getFriends, sendFriendRequest, respondToRequest, subscribeToFriendRequests, subscribeToSentRequests } from '../services/storage';
 import Button from '../components/Button';
 import Input from '../components/Input';
 import { FriendRequestStatus } from '../types';
@@ -18,32 +18,45 @@ const FriendListPage: React.FC<FriendListPageProps> = ({ session, onStartChat })
   const [addUsername, setAddUsername] = useState('');
   const [addStatus, setAddStatus] = useState<{success: boolean, message: string} | null>(null);
 
-  const refresh = () => {
-    setFriends(getFriends(session.userId));
-    setRequests(getFriendRequests(session.userId));
-    setSentRequests(getSentRequests(session.userId));
+  // Fetch Friends (Async once on load, or could be real-time if friends status changes often)
+  const refreshFriends = async () => {
+    const f = await getFriends(session.userId);
+    setFriends(f);
   };
 
   useEffect(() => {
-    refresh();
-    const interval = setInterval(refresh, 3000); 
-    return () => clearInterval(interval);
+    refreshFriends();
+    // Set up listeners for requests
+    const unsubRequests = subscribeToFriendRequests(session.userId, (reqs) => setRequests(reqs));
+    const unsubSent = subscribeToSentRequests(session.userId, (reqs) => setSentRequests(reqs));
+
+    return () => {
+      unsubRequests();
+      unsubSent();
+    };
   }, [session.userId]);
 
-  const handleSendRequest = (e: React.FormEvent) => {
+  // Refresh friends list if requests change (someone accepted)
+  useEffect(() => {
+    refreshFriends();
+  }, [requests.length, sentRequests.length]);
+
+
+  const handleSendRequest = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!addUsername.trim()) return;
-    const result = sendFriendRequest(session.userId, addUsername);
+    
+    // Async call
+    const result = await sendFriendRequest(session.userId, addUsername);
     setAddStatus(result);
     if (result.success) {
       setAddUsername('');
-      refresh();
     }
   };
 
-  const handleRespond = (requestId: string, status: FriendRequestStatus) => {
-    respondToRequest(requestId, status);
-    refresh();
+  const handleRespond = async (requestId: string, status: FriendRequestStatus) => {
+    await respondToRequest(requestId, status);
+    refreshFriends();
   };
 
   return (
