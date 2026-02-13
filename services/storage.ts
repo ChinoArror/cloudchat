@@ -1,19 +1,19 @@
 import { User, Message, FriendRequest, UserRole, FriendRequestStatus, UserStatus } from '../types';
 import { ADMIN_CREDENTIALS, ADMIN_USER_ID, ENCRYPTION_SECRET, FIREBASE_CONFIG, CONFIG_STORAGE_KEY } from '../constants';
 import * as firebaseApp from 'firebase/app';
-import { 
-  getFirestore, 
-  collection, 
-  doc, 
-  setDoc, 
-  getDoc, 
-  getDocs, 
-  addDoc, 
-  updateDoc, 
-  deleteDoc, 
-  query, 
-  where, 
-  orderBy, 
+import {
+  getFirestore,
+  collection,
+  doc,
+  setDoc,
+  getDoc,
+  getDocs,
+  addDoc,
+  updateDoc,
+  deleteDoc,
+  query,
+  where,
+  orderBy,
   onSnapshot,
   or,
   and,
@@ -57,27 +57,27 @@ export const resetFirebaseConfig = () => {
 };
 
 // Check DB Connection explicitly to detect "Missing Database" error
-export const checkDatabaseConnection = async (): Promise<{ok: boolean, error?: string}> => {
+export const checkDatabaseConnection = async (): Promise<{ ok: boolean, error?: string }> => {
   if (!db) return { ok: false, error: "Firebase not initialized" };
   try {
-     // Try to read the admin user doc. 
-     // If DB exists, this returns a snapshot (exists=true/false).
-     // If DB does not exist, this throws an error.
-     await getDoc(doc(db, 'users', ADMIN_USER_ID));
-     return { ok: true };
+    // Try to read the admin user doc. 
+    // If DB exists, this returns a snapshot (exists=true/false).
+    // If DB does not exist, this throws an error.
+    await getDoc(doc(db, 'users', ADMIN_USER_ID));
+    return { ok: true };
   } catch (e: any) {
-     const msg = e.message || '';
-     // Detect specific Firestore "Database not found" error
-     // This catches "The database (default) does not exist" OR "The database (chat) does not exist"
-     if (msg.includes('does not exist') || (msg.includes('project') && msg.includes('database') && e.code === 'not-found') || e.code === 'not-found') {
-         return { ok: false, error: 'database_missing' };
-     }
-     // Ignore offline errors for the check, assume it's just network
-     if (msg.includes('offline')) {
-         return { ok: true }; 
-     }
-     console.warn("DB Check failed:", e);
-     return { ok: false, error: msg };
+    const msg = e.message || '';
+    // Detect specific Firestore "Database not found" error
+    // This catches "The database (default) does not exist" OR "The database (chat) does not exist"
+    if (msg.includes('does not exist') || (msg.includes('project') && msg.includes('database') && e.code === 'not-found') || e.code === 'not-found') {
+      return { ok: false, error: 'database_missing' };
+    }
+    // Ignore offline errors for the check, assume it's just network
+    if (msg.includes('offline')) {
+      return { ok: true };
+    }
+    console.warn("DB Check failed:", e);
+    return { ok: false, error: msg };
   }
 };
 
@@ -85,7 +85,7 @@ export const checkDatabaseConnection = async (): Promise<{ok: boolean, error?: s
 const encrypt = (text: string): string => {
   const chars = text.split('');
   const secretLen = ENCRYPTION_SECRET.length;
-  const encrypted = chars.map((c, i) => 
+  const encrypted = chars.map((c, i) =>
     String.fromCharCode(c.charCodeAt(0) ^ ENCRYPTION_SECRET.charCodeAt(i % secretLen))
   ).join('');
   return btoa(encrypted);
@@ -95,7 +95,7 @@ const decrypt = (cipher: string): string => {
   try {
     const text = atob(cipher);
     const secretLen = ENCRYPTION_SECRET.length;
-    return text.split('').map((c, i) => 
+    return text.split('').map((c, i) =>
       String.fromCharCode(c.charCodeAt(0) ^ ENCRYPTION_SECRET.charCodeAt(i % secretLen))
     ).join('');
   } catch (e) {
@@ -182,16 +182,14 @@ export const getUserById = async (id: string): Promise<User | undefined> => {
 // --- Message Services (Real-time) ---
 
 export const subscribeToMessages = (user1Id: string, user2Id: string, callback: (messages: Message[]) => void) => {
-  if (!db) return () => {};
-  
+  if (!db) return () => { };
+
+  const conversationId = [user1Id, user2Id].sort().join('_');
   const messagesRef = collection(db, 'messages');
+  // Query by conversationId only to avoid composite index requirement
   const q = query(
     messagesRef,
-    or(
-      and(where('senderId', '==', user1Id), where('receiverId', '==', user2Id)),
-      and(where('senderId', '==', user2Id), where('receiverId', '==', user1Id))
-    ),
-    orderBy('timestamp', 'asc')
+    where('conversationId', '==', conversationId)
   );
 
   return onSnapshot(q, (snapshot) => {
@@ -199,6 +197,8 @@ export const subscribeToMessages = (user1Id: string, user2Id: string, callback: 
       const data = doc.data() as Message;
       return { ...data, content: decrypt(data.content) };
     });
+    // Sort by timestamp asc (oldest first) since we removed orderBy from query
+    messages.sort((a, b) => a.timestamp - b.timestamp);
     callback(messages);
   }, (error) => {
     console.error("Error subscribing to messages:", error);
@@ -207,13 +207,15 @@ export const subscribeToMessages = (user1Id: string, user2Id: string, callback: 
 
 export const sendMessage = async (senderId: string, receiverId: string, content: string, type: 'text' | 'emoji' = 'text'): Promise<void> => {
   if (!db) throw new Error("Database not initialized");
+  const conversationId = [senderId, receiverId].sort().join('_');
   const newMessage: Message = {
     id: crypto.randomUUID(),
     senderId,
     receiverId,
     content: encrypt(content),
     timestamp: Date.now(),
-    type
+    type,
+    conversationId
   };
   await addDoc(collection(db, 'messages'), newMessage);
 };
@@ -221,13 +223,13 @@ export const sendMessage = async (senderId: string, receiverId: string, content:
 // --- Friend Services (Async & Real-time) ---
 
 export const subscribeToFriendRequests = (userId: string, callback: (requests: FriendRequest[]) => void) => {
-  if (!db) return () => {};
+  if (!db) return () => { };
   const q = query(
-    collection(db, 'friend_requests'), 
-    where('toUserId', '==', userId), 
+    collection(db, 'friend_requests'),
+    where('toUserId', '==', userId),
     where('status', '==', FriendRequestStatus.PENDING)
   );
-  
+
   return onSnapshot(q, (snapshot) => {
     callback(snapshot.docs.map(doc => doc.data() as FriendRequest));
   }, (error) => {
@@ -236,23 +238,23 @@ export const subscribeToFriendRequests = (userId: string, callback: (requests: F
 };
 
 export const subscribeToSentRequests = (userId: string, callback: (requests: FriendRequest[]) => void) => {
-  if (!db) return () => {};
+  if (!db) return () => { };
   const q = query(
-    collection(db, 'friend_requests'), 
-    where('fromUserId', '==', userId), 
+    collection(db, 'friend_requests'),
+    where('fromUserId', '==', userId),
     where('status', '==', FriendRequestStatus.PENDING)
   );
 
   return onSnapshot(q, (snapshot) => {
     callback(snapshot.docs.map(doc => doc.data() as FriendRequest));
   }, (error) => {
-     console.error("Error subscribing to sent requests:", error);
+    console.error("Error subscribing to sent requests:", error);
   });
 };
 
 export const sendFriendRequest = async (fromUserId: string, toUsername: string): Promise<{ success: boolean, message: string }> => {
   if (!db) return { success: false, message: "Database Error" };
-  
+
   const targetUser = await findUserByUsername(toUsername);
   if (!targetUser) return { success: false, message: 'User not found.' };
   if (targetUser.id === fromUserId) return { success: false, message: 'Cannot add yourself.' };
@@ -265,7 +267,7 @@ export const sendFriendRequest = async (fromUserId: string, toUsername: string):
       and(where('fromUserId', '==', targetUser.id), where('toUserId', '==', fromUserId))
     )
   );
-  
+
   const querySnapshot = await getDocs(q);
   const existing = querySnapshot.docs
     .map(d => d.data() as FriendRequest)
@@ -300,7 +302,7 @@ export const getFriends = async (userId: string): Promise<User[]> => {
   const q2 = query(collection(db, 'friend_requests'), where('status', '==', FriendRequestStatus.ACCEPTED), where('toUserId', '==', userId));
 
   const [snap1, snap2] = await Promise.all([getDocs(q1), getDocs(q2)]);
-  
+
   const friendIds = new Set<string>();
   snap1.forEach(d => friendIds.add((d.data() as FriendRequest).toUserId));
   snap2.forEach(d => friendIds.add((d.data() as FriendRequest).fromUserId));
@@ -309,6 +311,6 @@ export const getFriends = async (userId: string): Promise<User[]> => {
 
   const friendPromises = Array.from(friendIds).map(fid => getUserById(fid));
   const friends = await Promise.all(friendPromises);
-  
+
   return friends.filter((f): f is User => f !== undefined);
 };

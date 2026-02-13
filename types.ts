@@ -25,6 +25,7 @@ export interface Message {
   content: string; // Encrypted content
   timestamp: number;
   type: 'text' | 'emoji';
+  conversationId: string; // Used for simpler querying without complex indexes
 }
 
 export enum FriendRequestStatus {
